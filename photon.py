@@ -63,6 +63,7 @@ warnings.filterwarnings('ignore') # Disable SSL related warnings
 parser = argparse.ArgumentParser()
 # Options
 parser.add_argument('-u', '--url', help='root url', dest='root')
+parser.add_argument('-f', '--file', help='file containing urls', dest='filename')
 parser.add_argument('-c', '--cookie', help='cookie', dest='cook')
 parser.add_argument('-r', '--regex', help='regex pattern', dest='regex')
 parser.add_argument('-e', '--export', help='export format', dest='export')
@@ -121,11 +122,16 @@ if args.update: # if the user has supplied --update argument
     update()
     quit() # quitting because files have been changed
 
+rootFile=[]
+
 if args.root: # if the user has supplied a url
     main_inp = args.root
     if main_inp.endswith('/'): # if the url ends with '/'
         main_inp = main_inp[:-1] # we will remove it as it can cause problems later in the code
-else: # if the user hasn't supplied a url
+    rootFile.append(args.root)
+    
+if not args.root and not args.filename:
+    #else: # if the user hasn't supplied a url
     print('\n' + parser.format_help().lower())
     quit()
 
@@ -158,35 +164,20 @@ bad_intel = set() # unclean intel urls
 bad_scripts = set() # unclean javascript file urls
 
 # If the user hasn't supplied the root url with http(s), we will handle it
-if main_inp.startswith('http'):
-    main_url = main_inp
-else:
-    try:
-        get('https://' + main_inp)
-        main_url = 'https://' + main_inp
-    except:
-        main_url = 'http://' + main_inp
 
-schema = main_url.split('//')[0] # https: or http:?
-
-internal.add(main_url) # adding the root url to internal for crawling
-
-host = urlparse(main_url).netloc # Extracts host out of the url
-
-output_dir = args.output or host
 
 ####
 # This function extracts top level domain from a url
 ####
 
 def topLevel(url):
+    host = urlparse(url).netloc
     try:
         toplevel = tld.get_tld(host, fix_protocol=True)
     except tld.exceptions.TldDomainNotFound:
-        toplevel = urlparse(main_url).netloc
+        toplevel = urlparse(url).netloc
     return toplevel
 
-domain = topLevel(main_url)
 
 ####
 # This function makes requests to webpage and returns response body
@@ -290,25 +281,28 @@ def zap(url):
         for url in archived_urls:
             verb('Internal page', url)
             internal.add(url)
-    response = get(url + '/robots.txt', verify=False).text # makes request to robots.txt
-    if '<body' not in response: # making sure robots.txt isn't some fancy 404 page
-        matches = findall(r'Allow: (.*)|Disallow: (.*)', response) # If you know it, you know it
-        if matches:
-            for match in matches: # iterating over the matches, match is a tuple here
-                match = ''.join(match) # one item in match will always be empty so will combine both items
-                if '*' not in match: # if the url doesn't use a wildcard
-                    url = main_url + match
-                    internal.add(url) # add the url to internal list for crawling
-                    robots.add(url) # add the url to robots list
-            print('%s URLs retrieved from robots.txt: %s' % (good, len(robots)))
-    response = get(url + '/sitemap.xml', verify=False).text # makes request to sitemap.xml
-    if '<body' not in response: # making sure robots.txt isn't some fancy 404 page
-        matches = xmlParser(response)
-        if matches: # if there are any matches
-            print('%s URLs retrieved from sitemap.xml: %s' % (good, len(matches)))
-            for match in matches:
-                verb('Internal page', url)
-                internal.add(match) #cleaning up the url & adding it to the internal list for crawling
+    try:            
+        response = get(url + '/robots.txt', verify=False).text # makes request to robots.txt
+        if '<body' not in response: # making sure robots.txt isn't some fancy 404 page
+            matches = findall(r'Allow: (.*)|Disallow: (.*)', response) # If you know it, you know it
+            if matches:
+                for match in matches: # iterating over the matches, match is a tuple here
+                    match = ''.join(match) # one item in match will always be empty so will combine both items
+                    if '*' not in match: # if the url doesn't use a wildcard
+                        url = main_url + match
+                        internal.add(url) # add the url to internal list for crawling
+                        robots.add(url) # add the url to robots list
+                print('%s URLs retrieved from robots.txt: %s' % (good, len(robots)))
+        response = get(url + '/sitemap.xml', verify=False).text # makes request to sitemap.xml
+        if '<body' not in response: # making sure robots.txt isn't some fancy 404 page
+            matches = xmlParser(response)
+            if matches: # if there are any matches
+                print('%s URLs retrieved from sitemap.xml: %s' % (good, len(matches)))
+                for match in matches:
+                    verb('Internal page', url)
+                    internal.add(match) #cleaning up the url & adding it to the internal list for crawling
+    except:
+        pass            
 
 ####
 # This functions checks whether a url matches a regular expression
@@ -480,6 +474,30 @@ def threader(function, *urls):
 ####
 # This function processes the urls and uses a threadpool to execute a function
 ####
+def timer(diff):
+    minutes, seconds = divmod(diff, 60) # Changes seconds into minutes and seconds
+    try:
+        time_per_request = diff / float(len(processed)) # Finds average time taken by requests
+    except ZeroDivisionError:
+        time_per_request = 0
+    return minutes, seconds, time_per_request
+
+def writer(datasets, dataset_names, output_dir):
+    for dataset, dataset_name in zip(datasets, dataset_names):
+        if dataset:
+            filepath = output_dir + '/' + dataset_name + '.txt'
+            if python3:
+                with open(filepath, 'w+', encoding='utf8') as f:
+                    f.write(str('\n'.join(dataset)))
+                    f.write('\n')
+            else:
+                with open(filepath, 'w+') as f:
+                    joined = '\n'.join(dataset)
+                    f.write(str(joined.encode('utf-8')))
+                    f.write('\n')
+
+
+
 
 def flash(function, links): # This shit is NOT complicated, please enjoy
     links = list(links) # convert links (set) to list
@@ -501,124 +519,125 @@ def flash(function, links): # This shit is NOT complicated, please enjoy
                 print('%s Progress: %i/%i' % (info, i + 1, len(links)), end='\r')
     print('')
 
-then = time.time() # records the time at which crawling started
 
-# Step 1. Extract urls from robots.txt & sitemap.xml
-zap(main_url)
+filename=""
+if args.filename:
+    with open(args.filename) as f:
+        rootFile = f.read().splitlines()
+for root in rootFile:
+    print(' [+] Crawling: '+root)
+    domain = topLevel(root)
+    main_inp = root
 
-# this is so the level 1 emails are parsed as well
-internal = set(remove_regex(internal, args.exclude))
+    if main_inp.endswith('/'): # if the url ends with '/'
+        main_inp = main_inp[:-1] # we will remove it as it can cause problems later in the code
 
-# Step 2. Crawl recursively to the limit specified in "crawl_level"
-for level in range(crawl_level):
-    links = remove_regex(internal - processed, args.exclude) # links to crawl = (all links - already crawled links) - links not to crawl
-    if not links: # if links to crawl are 0 i.e. all links have been crawled
-        break
-    elif len(internal) <= len(processed): # if crawled links are somehow more than all links. Possible? ;/
-        if len(internal) > 2 + len(args.seeds): # if you know it, you know it
-            break
-    print('%s Level %i: %i URLs' % (run, level + 1, len(links)))
-    try:
-        flash(extractor, links)
-    except KeyboardInterrupt:
-        print('')
-        break
 
-if not only_urls:
-    for match in bad_scripts:
-        if match.startswith(main_url):
-            scripts.add(match)
-        elif match.startswith('/') and not match.startswith('//'):
-            scripts.add(main_url + match)
-        elif not match.startswith('http') and not match.startswith('//'):
-            scripts.add(main_url + '/' + match)
-    # Step 3. Scan the JavaScript files for enpoints
-    print('%s Crawling %i JavaScript files' % (run, len(scripts)))
-    flash(jscanner, scripts)
+    if main_inp.startswith('http'):
+        main_url = main_inp
+    else:
+        try:
+            get('https://' + main_inp)
+            main_url = 'https://' + main_inp
+        except:
+            main_url = 'http://' + main_inp
+    schema = main_url.split('//')[0] # https: or http:?
+    internal.add(main_url) # adding the root url to internal for crawling
+    host = urlparse(main_url).netloc # Extracts host out of the url
+    output_dir = args.output or host
+    then = time.time() # records the time at which crawling started
+    # Step 1. Extract urls from robots.txt & sitemap.xml
+    zap(main_url)  
+    # this is so the level 1 emails are parsed as well
+    internal = set(remove_regex(internal, args.exclude))
+    for level in range(crawl_level):  
+    	links = remove_regex(internal - processed, args.exclude) # links to crawl = (all links - already crawled links) - links not to crawl
+    	if not links:
+    	    break
+    	elif len(internal) <= len(processed): # if crawled links are somehow more than all links. Possible? ;/
+    	    if len(internal) > 2 + len(args.seeds): # if you know it, you know it
+    	        break
+    	print('%s Level %i: %i URLs' % (run, level + 1, len(links)))
+    	try:
+    	    flash(extractor, links)
+    	except KeyboardInterrupt:
+    	    print('')
+    	    break
+    if not only_urls:
+    	for match in bad_scripts:
+        		if match.startswith(main_url):
+           			scripts.add(match)
+        		elif match.startswith('/') and not match.startswith('//'):
+            			scripts.add(main_url + match)
+        		elif not match.startswith('http') and not match.startswith('//'):
+            			scripts.add(main_url + '/' + match)
+    	# Step 3. Scan the JavaScript files for enpoints
+    	print('%s Crawling %i JavaScript files' % (run, len(scripts)))
+    	flash(jscanner, scripts)
 
-    for url in internal:
-        if '=' in url:
-            fuzzable.add(url)
+    	for url in internal:
+    	    if '=' in url:
+            	fuzzable.add(url)
 
-    for match in bad_intel:
-        for x in match: # because "match" is a tuple
-            if x != '': # if the value isn't empty
-                intel.add(x)
-        for url in external:
-            try:
-                if tld.get_tld(url, fix_protocol=True) in intels:
-                    intel.add(url)
-            except:
-                pass
+    	for match in bad_intel:
+    	   	for x in match: # because "match" is a tuple
+    	        	if x != '': # if the value isn't empty
+    	            		intel.add(x)
+    	   	for url in external:
+    	        	try:
+    	           		if tld.get_tld(url, fix_protocol=True) in intels:
+    	                		intel.add(url)
+    	        	except:
+    	            		pass
 
-now = time.time() # records the time at which crawling stopped
-diff = (now - then) # finds total time taken
+    now = time.time() # records the time at which crawling stopped
+    diff = (now - then) # finds total time taken
 
-def timer(diff):
-    minutes, seconds = divmod(diff, 60) # Changes seconds into minutes and seconds
-    try:
-        time_per_request = diff / float(len(processed)) # Finds average time taken by requests
-    except ZeroDivisionError:
-        time_per_request = 0
-    return minutes, seconds, time_per_request
-minutes, seconds, time_per_request = timer(diff)
+    if args.dns:
+        print ('%s Enumerating subdomains' % run)
+        from plugins.findSubdomains import findSubdomains
+        subdomains = findSubdomains(domain)
+        print ('%s %i subdomains found' % (info, len(subdomains)))
+        writer([subdomains], ['subdomains'], output_dir)
+        datasets['subdomains'] = subdomains
+        from plugins.dnsdumpster import dnsdumpster
+        print ('%s Generating DNS map' % run)
+        dnsdumpster(domain, output_dir)
 
-# Step 4. Save the results
-if not os.path.exists(output_dir): # if the directory doesn't exist
-    os.mkdir(output_dir) # create a new directory
+    if args.export:
+        from plugins.exporter import exporter
+        # exporter(directory, format, datasets)
+        exporter(output_dir, args.export, datasets)
+    print('%s Results saved in %s%s%s directory' % (good, green, output_dir, end))
 
-datasets = [files, intel, robots, custom, failed, internal, scripts, external, fuzzable, endpoints, keys]
-dataset_names = ['files', 'intel', 'robots', 'custom', 'failed', 'internal', 'scripts', 'external', 'fuzzable', 'endpoints', 'keys']
+    minutes, seconds, time_per_request = timer(diff)
 
-def writer(datasets, dataset_names, output_dir):
+    # Step 4. Save the results
+    if not os.path.exists(output_dir): # if the directory doesn't exist
+        os.mkdir(output_dir) # create a new directory
+
+    datasets = [files, intel, robots, custom, failed, internal, scripts, external, fuzzable, endpoints, keys]
+    dataset_names = ['files', 'intel', 'robots', 'custom', 'failed', 'internal', 'scripts', 'external', 'fuzzable', 'endpoints', 'keys']
+
+    if args.std:
+        for string in datasets[args.std]:
+            sys.stdout.write(string + '\n')
+
+    writer(datasets, dataset_names, output_dir)
+    # Printing out results
+    print (('%s-%s' % (red, end)) * 50)
     for dataset, dataset_name in zip(datasets, dataset_names):
         if dataset:
-            filepath = output_dir + '/' + dataset_name + '.txt'
-            if python3:
-                with open(filepath, 'w+', encoding='utf8') as f:
-                    f.write(str('\n'.join(dataset)))
-                    f.write('\n')
-            else:
-                with open(filepath, 'w+') as f:
-                    joined = '\n'.join(dataset)
-                    f.write(str(joined.encode('utf-8')))
-                    f.write('\n')
+            print ('%s %s: %s' % (good, dataset_name.capitalize(), len(dataset)))
+    #print (('%s-%s' % (red, end)) * 50)
+    print('%s Total requests made: %i' % (info, len(processed)))
+    print('%s Total time taken: %i minutes %i seconds' % (info, minutes, seconds))
+    print('%s Requests per second: %i' % (info, int(len(processed)/diff)))
 
-writer(datasets, dataset_names, output_dir)
-# Printing out results
-print (('%s-%s' % (red, end)) * 50)
-for dataset, dataset_name in zip(datasets, dataset_names):
-    if dataset:
-        print ('%s %s: %s' % (good, dataset_name.capitalize(), len(dataset)))
-print (('%s-%s' % (red, end)) * 50)
+    print (('%s-%s' % (red, end)) * 50)
+    datasets = {
+    'files': list(files), 'intel': list(intel), 'robots': list(robots), 'custom': list(custom), 'failed': list(failed), 'internal': list(internal),
+    'scripts': list(scripts), 'external': list(external), 'fuzzable': list(fuzzable), 'endpoints': list(endpoints), 'keys' : list(keys)
+    }
 
-print('%s Total requests made: %i' % (info, len(processed)))
-print('%s Total time taken: %i minutes %i seconds' % (info, minutes, seconds))
-print('%s Requests per second: %i' % (info, int(len(processed)/diff)))
 
-datasets = {
-'files': list(files), 'intel': list(intel), 'robots': list(robots), 'custom': list(custom), 'failed': list(failed), 'internal': list(internal),
-'scripts': list(scripts), 'external': list(external), 'fuzzable': list(fuzzable), 'endpoints': list(endpoints), 'keys' : list(keys)
-}
-
-if args.dns:
-    print ('%s Enumerating subdomains' % run)
-    from plugins.findSubdomains import findSubdomains
-    subdomains = findSubdomains(domain)
-    print ('%s %i subdomains found' % (info, len(subdomains)))
-    writer([subdomains], ['subdomains'], output_dir)
-    datasets['subdomains'] = subdomains
-    from plugins.dnsdumpster import dnsdumpster
-    print ('%s Generating DNS map' % run)
-    dnsdumpster(domain, output_dir)
-
-if args.export:
-    from plugins.exporter import exporter
-    # exporter(directory, format, datasets)
-    exporter(output_dir, args.export, datasets)
-
-print('%s Results saved in %s%s%s directory' % (good, green, output_dir, end))
-
-if args.std:
-    for string in datasets[args.std]:
-        sys.stdout.write(string + '\n')
