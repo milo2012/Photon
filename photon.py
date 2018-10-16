@@ -525,6 +525,8 @@ if args.filename:
     with open(args.filename) as f:
         rootFile = f.read().splitlines()
 for root in rootFile:
+    root = root.strip()
+
     print(' [+] Crawling: '+root)
     domain = topLevel(root)
     main_inp = root
